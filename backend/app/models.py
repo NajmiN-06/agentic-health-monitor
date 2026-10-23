@@ -12,3 +12,6 @@ class VitalsRecord(SQLModel, table=True):
     blood_pressure_dia: float
     spo2: float
     temperature: float
+    is_anomaly: bool = Field(default=False)
+    anomaly_score: float = Field(default=0.0)
+    triage_note: Optional[str] = Field(default=None)    

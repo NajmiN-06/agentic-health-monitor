@@ -1,69 +1,100 @@
 from fastapi import FastAPI, status, Depends
 from sqlmodel import Session, select
 from typing import List
+from dotenv import load_dotenv; load_dotenv()
 
-from app.schemas import VitalsPayload
+from app.schemas import VitalsPayload, VitalsResponse
 from app.models import VitalsRecord
 from app.database import create_db_and_tables, get_session
+from app.services.anomaly import anomaly_detector
+from app.services.agent import generate_triage_note
 
-# Initialize FastAPI application
 app = FastAPI(
     title="Post-Op Telemetry Ingestion API",
-    description="Agnostic ingestion endpoint for real-time patient recovery vitals."
+    description="Full Agentic Clinical Guardrail Pipeline."
 )
 
-# Initialize database tables on server startup
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()
 
-# 1. Health Check Endpoint
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "PostOp-Telemetry-V1"}
+    return {"status": "online", "system": "PostOp-Telemetry-Agentic-V2"}
 
-# 2. Ingestion Endpoint (Validates payload AND saves to SQLite)
-@app.post("/api/vitals", status_code=status.HTTP_201_CREATED)
+# 1. Ingestion Pipeline: ML Score -> Conditional AI Triage -> DB Persistence
+@app.post("/api/vitals", response_model=VitalsResponse, status_code=status.HTTP_201_CREATED)
 def receive_vitals(payload: VitalsPayload, session: Session = Depends(get_session)):
-    # Convert validated schema payload into a Database Record
+    # Step A: Run ML Anomaly Detection
+    is_anomaly, anomaly_score = anomaly_detector.predict(payload)
+    
+    triage_note = None
+    
+    # Step B: Trigger Agentic AI ONLY if an anomaly is detected
+    if is_anomaly:
+        # Fetch last 5 patient records for historical context
+        history_stmt = (
+            select(VitalsRecord)
+            .where(VitalsRecord.patient_id == payload.patient_id)
+            .order_by(VitalsRecord.id.desc())
+            .limit(5)
+        )
+        history = session.exec(history_stmt).all()
+        
+        # Build temp record object to pass to the agent prompt
+        temp_record = VitalsRecord(**payload.model_dump())
+        triage_note = generate_triage_note(temp_record, history)
+        
+        print(f"\n🚨 [CRITICAL ANOMALY ALERT] Patient: {payload.patient_id}")
+        print(f"AI Triage Generated:\n{triage_note}\n")
+    else:
+        print(f"✅ [NORMAL] Patient: {payload.patient_id} | Score: {anomaly_score}")
+
+    # Step C: Save enriched record to SQLite
     db_record = VitalsRecord(
         patient_id=payload.patient_id,
         heart_rate=payload.heart_rate,
         blood_pressure_sys=payload.blood_pressure_sys,
         blood_pressure_dia=payload.blood_pressure_dia,
         spo2=payload.spo2,
-        temperature=payload.temperature
+        temperature=payload.temperature,
+        is_anomaly=is_anomaly,
+        anomaly_score=anomaly_score,
+        triage_note=triage_note
     )
     
-    # Persist record into SQLite database
     session.add(db_record)
     session.commit()
     session.refresh(db_record)
     
-    print(
-        f"[SAVED TO DB] Record ID: {db_record.id} | Patient: {db_record.patient_id} | "
-        f"HR: {db_record.heart_rate} | SpO2: {db_record.spo2}%"
+    return VitalsResponse(
+        status="acknowledged",
+        record_id=db_record.id,
+        patient_id=db_record.patient_id,
+        is_anomaly=db_record.is_anomaly,
+        anomaly_score=db_record.anomaly_score,
+        triage_note=db_record.triage_note
     )
-    
-    return {
-        "status": "acknowledged",
-        "record_id": db_record.id,
-        "patient_id": db_record.patient_id
-    }
 
-# 3. Retrieval Endpoint (Fetches recent vitals history for dashboard/ML)
+# 2. Get Recent Patient History
 @app.get("/api/vitals/{patient_id}", response_model=List[VitalsRecord])
-def get_patient_history(
-    patient_id: str, 
-    limit: int = 20, 
-    session: Session = Depends(get_session)
-):
-    # Query database for the latest readings for a given patient
+def get_patient_history(patient_id: str, limit: int = 20, session: Session = Depends(get_session)):
     statement = (
         select(VitalsRecord)
         .where(VitalsRecord.patient_id == patient_id)
         .order_by(VitalsRecord.id.desc())
         .limit(limit)
     )
-    results = session.exec(statement).all()
-    return results
+    return session.exec(statement).all()
+
+# 3. Get Active Critical Alerts Endpoint (For Phase 3 UI)
+@app.get("/api/alerts/{patient_id}", response_model=List[VitalsRecord])
+def get_patient_alerts(patient_id: str, limit: int = 10, session: Session = Depends(get_session)):
+    statement = (
+        select(VitalsRecord)
+        .where(VitalsRecord.patient_id == patient_id)
+        .where(VitalsRecord.is_anomaly == True)
+        .order_by(VitalsRecord.id.desc())
+        .limit(limit)
+    )
+    return session.exec(statement).all()
