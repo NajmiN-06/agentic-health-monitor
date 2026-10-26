@@ -11,9 +11,9 @@ st.set_page_config(
 
 API_BASE_URL = "http://127.0.0.1:8000"
 
-# Initialize local session state for instant UI dismissal
-if 'dismissed_current_alert' not in st.session_state:
-    st.session_state.dismissed_current_alert = False
+# Initialize local session state for instant UI dismissal using alert IDs
+if 'dismissed_alert_ids' not in st.session_state:
+    st.session_state.dismissed_alert_ids = set()
 
 st.sidebar.title("Telemetry Controls")
 patient_id = st.sidebar.text_input("Patient ID", value="PATIENT-POSTOP-102")
@@ -53,26 +53,28 @@ if df.empty:
     st.warning(f"No telemetry data found for patient `{patient_id}`. Verify that the simulator service is running.")
 else:
     latest = df.iloc[-1]
-    
-    # Check for unacknowledged alerts from the backend
-    unacked_alerts = [a for a in alerts_data if not a.get('acknowledged', False)]
-    has_active_backend_alert = len(unacked_alerts) > 0
 
-    # Reset local dismissal flag if a brand new anomaly cycle occurs
-    if has_active_backend_alert:
-        current_alert = unacked_alerts[0]
-    else:
-        st.session_state.dismissed_current_alert = False
+    # Prune dismissed IDs that the backend has already acknowledged (keeps the set small)
+    backend_acked_ids = {a['id'] for a in alerts_data if a.get('acknowledged', False)}
+    st.session_state.dismissed_alert_ids -= backend_acked_ids
 
-    show_alert_banner = has_active_backend_alert and not st.session_state.dismissed_current_alert
+    # Find alerts that are unacked on the backend AND not locally dismissed
+    unacked_alerts = [
+        a for a in alerts_data
+        if not a.get('acknowledged', False) and a['id'] not in st.session_state.dismissed_alert_ids
+    ]
+    has_active_alert = len(unacked_alerts) > 0
+
+    show_alert_banner = has_active_alert
 
     # --- 1. SAFETY ALERT BANNER ---
     if show_alert_banner:
         current_alert = unacked_alerts[0]
+        alert_id = current_alert['id']
         alert_ts = str(current_alert.get('timestamp'))
 
         st.error("CRITICAL CLINICAL ALERT: ACUTE PHYSIOLOGICAL VARIANCE / ESCALATION DETECTED")
-        
+
         col_alert_1, col_alert_2 = st.columns([1, 2])
         with col_alert_1:
             st.markdown("**Triggering Measurement Snapshot:**")
@@ -82,9 +84,11 @@ else:
             triage_val = current_alert.get('triage_note')
             triage_text = str(triage_val) if triage_val is not None and pd.notna(triage_val) else "Standard clinical guardrails active: Recommend immediate bedside nursing review and physician notification."
             st.info(triage_text)
-            
-            if st.button("Acknowledge & Dismiss Alert", key="dismiss_global_alert", type="primary"):
-                st.session_state.dismissed_current_alert = True
+
+            if st.button("Acknowledge & Dismiss Alert", key=f"dismiss_alert_{alert_id}", type="primary"):
+                # Immediately mark this specific alert as locally dismissed
+                st.session_state.dismissed_alert_ids.add(alert_id)
+                # Fire-and-forget: tell the backend to persist the acknowledgment
                 try:
                     requests.post(f"{API_BASE_URL}/api/acknowledge/{patient_id}", timeout=3)
                 except:
@@ -105,8 +109,8 @@ else:
     with kpi_4:
         st.metric("Core Temperature", f"{latest['temperature']:.1f} °C")
     with kpi_5:
-        # Clinical status is VARIANCE only if there's an active unacked alert and it hasn't been locally dismissed
-        is_var = show_alert_banner or (not st.session_state.dismissed_current_alert and bool(latest['is_anomaly']))
+        # Clinical status is VARIANCE only if the alert banner is actively shown
+        is_var = show_alert_banner
         status_text = "VARIANCE" if is_var else "STABLE"
         color_code = "#ff4b4b" if is_var else "#2ecc71"
         st.markdown(
