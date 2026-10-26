@@ -1,54 +1,68 @@
 import time
+import requests
 import random
-import httpx
 
 API_URL = "http://127.0.0.1:8000/api/vitals"
+GATE_URL = "http://127.0.0.1:8000/api/simulation-gate/PATIENT-POSTOP-102"
 PATIENT_ID = "PATIENT-POSTOP-102"
 
-def generate_vitals(is_anomaly: bool = False) -> dict:
-    if not is_anomaly:
-        return{
-        "patient_id": PATIENT_ID,
-            "heart_rate": round(random.gauss(72, 3), 1),        
-            "blood_pressure_sys": round(random.gauss(118, 4), 1),
-            "blood_pressure_dia": round(random.gauss(76, 3), 1), 
-            "spo2": round(random.gauss(98, 0.5), 1),            
-            "temperature": round(random.gauss(36.7, 0.1), 1)
-    }
-    else:
+def wait_for_acknowledgment():
+    """Pauses telemetry streaming if an unacknowledged clinical alert is active on the dashboard."""
+    while True:
+        try:
+            res = requests.get(GATE_URL, timeout=2)
+            if res.status_code == 200:
+                data = res.json()
+                if not data.get("pause", False):
+                    break
+                else:
+                    print("⏸️ Clinical alert active. Simulator paused waiting for clinician dismissal...")
+        except Exception as e:
+            print(f"Gate check error: {e}")
+        time.sleep(3)
 
-        return {
-            "patient_id": PATIENT_ID,
-            "heart_rate": round(random.gauss(138, 6), 1),       
-            "blood_pressure_sys": round(random.gauss(82, 4), 1),
-            "blood_pressure_dia": round(random.gauss(52, 3), 1),
-            "spo2": round(random.gauss(87, 1.5), 1),           
-            "temperature": round(random.gauss(39.1, 0.2), 1)   
-        }
-
-def start_stream(interval_seconds: int = 2, anomaly_interval: int = 8):
-    """
-    Streams live telemetry to the backend.
-    Injects an anomaly every `anomaly_interval` ticks to simulate a sudden clinical event.
-    """
-    tick = 0
-    with httpx.Client() as client:
-        print(f"--- Starting Post-Op Telemetry Stream for {PATIENT_ID} ---")
-        while True:
-            tick += 1
-            # Inject a sudden anomaly spike every 8th reading
-            trigger_anomaly = (tick % anomaly_interval == 0)
-            state_label = "CRITICAL_ANOMALY" if trigger_anomaly else "POSTOP_STABLE"
-            
-            vitals = generate_vitals(is_anomaly=trigger_anomaly)
-            
+def run_simulation():
+    cycle = 0
+    while True:
+        cycle += 1
+        print(f"\n--- Starting Monitoring Cycle {cycle} ---")
+        
+        # Phase 1: Send 7 stable normal ticks
+        for t in range(1, 8):
+            wait_for_acknowledgment()
+            payload = {
+                "patient_id": PATIENT_ID,
+                "heart_rate": random.uniform(70.0, 80.0),
+                "blood_pressure_sys": random.uniform(115.0, 125.0),
+                "blood_pressure_dia": random.uniform(72.0, 80.0),
+                "spo2": random.uniform(97.0, 99.0),
+                "temperature": random.uniform(36.6, 37.0)
+            }
             try:
-                response = client.post(API_URL, json=vitals)
-                print(f"[Tick {tick:02d}] State: {state_label} | Status: {response.status_code}")
+                requests.post(API_URL, json=payload)
+                print(f"Stable tick {t}/7 sent.")
             except Exception as e:
-                print(f"[Tick {tick:02d}] Transmission Error: {e}")
-                
-            time.sleep(interval_seconds)
+                print(f"Error sending stable tick: {e}")
+            time.sleep(2.5)
+            
+        # Phase 2: Send consecutive escalating variance/anomaly ticks
+        print("🚨 Triggering Acute Physiological Variance Sequence...")
+        for variance_tick in range(1, 4):
+            wait_for_acknowledgment()
+            payload = {
+                "patient_id": PATIENT_ID,
+                "heart_rate": random.uniform(130.0 + variance_tick * 3, 145.0),
+                "blood_pressure_sys": random.uniform(80.0 - variance_tick * 5, 85.0),
+                "blood_pressure_dia": random.uniform(48.0, 55.0),
+                "spo2": random.uniform(84.0 - variance_tick * 2, 88.0),
+                "temperature": random.uniform(38.5, 39.4)
+            }
+            try:
+                requests.post(API_URL, json=payload)
+                print(f"Variance escalation tick {variance_tick}/3 sent.")
+            except Exception as e:
+                print(f"Error sending variance tick: {e}")
+            time.sleep(2.5)
 
 if __name__ == "__main__":
-    start_stream()
+    run_simulation()

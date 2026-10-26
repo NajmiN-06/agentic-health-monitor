@@ -32,7 +32,7 @@ def receive_vitals(payload: VitalsPayload, session: Session = Depends(get_sessio
     
     # Step B: Trigger Agentic AI ONLY if an anomaly is detected
     if is_anomaly:
-        # Fetch last 5 patient records for historical context
+        # Fetch last 5 patient records for historical context & pattern tracking
         history_stmt = (
             select(VitalsRecord)
             .where(VitalsRecord.patient_id == payload.patient_id)
@@ -60,7 +60,8 @@ def receive_vitals(payload: VitalsPayload, session: Session = Depends(get_sessio
         temperature=payload.temperature,
         is_anomaly=is_anomaly,
         anomaly_score=anomaly_score,
-        triage_note=triage_note
+        triage_note=triage_note,
+        acknowledged=False
     )
     
     session.add(db_record)
@@ -76,18 +77,20 @@ def receive_vitals(payload: VitalsPayload, session: Session = Depends(get_sessio
         triage_note=db_record.triage_note
     )
 
-# 2. Get Recent Patient History
+# 2. Get Recent Patient History (Chronological Order for Live Stream & Charts)
 @app.get("/api/vitals/{patient_id}", response_model=List[VitalsRecord])
-def get_patient_history(patient_id: str, limit: int = 20, session: Session = Depends(get_session)):
+def get_patient_history(patient_id: str, limit: int = 30, session: Session = Depends(get_session)):
     statement = (
         select(VitalsRecord)
         .where(VitalsRecord.patient_id == patient_id)
         .order_by(VitalsRecord.id.desc())
         .limit(limit)
     )
-    return session.exec(statement).all()
+    results = session.exec(statement).all()
+    # Reverse list so chronological order flows left-to-right and latest tick is at index -1
+    return results[::-1]
 
-# 3. Get Active Critical Alerts Endpoint (For Phase 3 UI)
+# 3. Get Active Critical Alerts Endpoint
 @app.get("/api/alerts/{patient_id}", response_model=List[VitalsRecord])
 def get_patient_alerts(patient_id: str, limit: int = 10, session: Session = Depends(get_session)):
     statement = (
@@ -98,3 +101,31 @@ def get_patient_alerts(patient_id: str, limit: int = 10, session: Session = Depe
         .limit(limit)
     )
     return session.exec(statement).all()
+
+# 4. Check if simulator should pause
+@app.get("/api/simulation-gate/{patient_id}")
+def check_simulation_gate(patient_id: str, session: Session = Depends(get_session)):
+    statement = (
+        select(VitalsRecord)
+        .where(VitalsRecord.patient_id == patient_id)
+        .where(VitalsRecord.is_anomaly == True)
+        .where(VitalsRecord.acknowledged == False)
+    )
+    unacked = session.exec(statement).first()
+    return {"pause": unacked is not None}
+
+# 5. Acknowledge/Dismiss endpoint triggered by Streamlit dashboard
+@app.post("/api/acknowledge/{patient_id}")
+def acknowledge_alerts(patient_id: str, session: Session = Depends(get_session)):
+    statement = (
+        select(VitalsRecord)
+        .where(VitalsRecord.patient_id == patient_id)
+        .where(VitalsRecord.is_anomaly == True)
+        .where(VitalsRecord.acknowledged == False)
+    )
+    records = session.exec(statement).all()
+    for r in records:
+        r.acknowledged = True
+        session.add(r)
+    session.commit()
+    return {"status": "success", "acknowledged_count": len(records)}
