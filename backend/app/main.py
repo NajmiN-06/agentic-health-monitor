@@ -129,3 +129,26 @@ def acknowledge_alerts(patient_id: str, session: Session = Depends(get_session))
         session.add(r)
     session.commit()
     return {"status": "success", "acknowledged_count": len(records)}
+
+# 6. Optional: Trigger variance directly on demand for demo/testing
+@app.post("/api/trigger-variance/{patient_id}")
+def trigger_variance(patient_id: str, session: Session = Depends(get_session)):
+    payload = VitalsPayload(
+        patient_id=patient_id,
+        heart_rate=136.5,
+        blood_pressure_sys=76.0,
+        blood_pressure_dia=48.5,
+        spo2=85.2,
+        temperature=38.8
+    )
+    return receive_vitals(payload, session)
+
+# 7. Optional: Reset telemetry history to start clean
+@app.post("/api/reset/{patient_id}")
+def reset_patient_telemetry(patient_id: str, session: Session = Depends(get_session)):
+    statement = select(VitalsRecord).where(VitalsRecord.patient_id == patient_id)
+    records = session.exec(statement).all()
+    for r in records:
+        session.delete(r)
+    session.commit()
+    return {"status": "success", "deleted_count": len(records)}
