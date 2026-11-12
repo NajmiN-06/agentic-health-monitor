@@ -281,7 +281,7 @@ except Exception:
     backend_online = False
 
 status_dot_class = "dot-green" if backend_online else "dot-red"
-status_text = "Ingestion Pipeline Connected" if backend_online else "Backend Offline (Port 8000)"
+status_text = "Ingestion Pipeline Connected" if backend_online else "Backend Offline"
 st.sidebar.markdown(f'<span class="live-status-dot {status_dot_class}"></span>**Backend:** {status_text}', unsafe_allow_html=True)
 
 
@@ -323,7 +323,6 @@ def render_live_telemetry():
 
     if df.empty:
         st.info(f"⏳ Telemetry stream active for patient `{patient_id}`. Waiting for initial readings from simulator...")
-        st.caption("Ensure `simulator.py` is running in your terminal (`python backend/app/services/simulator.py`).")
         return
 
     latest = df.iloc[-1]

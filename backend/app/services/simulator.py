@@ -1,14 +1,19 @@
-import time
-import requests
+import os
 import random
+import threading
+import time
+from fastapi import FastAPI
+import uvicorn
+import requests
 
-API_URL = "http://127.0.0.1:8000/api/vitals"
-GATE_URL = "http://127.0.0.1:8000/api/simulation-gate/PATIENT-POSTOP-102"
+# Point to your live Render Backend URL instead of localhost
+BACKEND_BASE_URL = "https://agentic-health-monitor-4.onrender.com"
+API_URL = f"{BACKEND_BASE_URL}/api/vitals"
+GATE_URL = f"{BACKEND_BASE_URL}/api/simulation-gate/PATIENT-POSTOP-102"
 PATIENT_ID = "PATIENT-POSTOP-102"
 
 def wait_for_acknowledgment():
     """Pauses telemetry streaming if an unacknowledged clinical alert is active on the dashboard."""
-    # Give the backend a brief moment to ingest the anomaly before polling
     time.sleep(0.5)
     while True:
         try:
@@ -73,5 +78,18 @@ def run_simulation():
         print(f"🔄 Resetting physiological baseline. Initiating new normal vital cycle...\n")
         time.sleep(1.0)
 
+# --- Lightweight FastAPI wrapper so Render Web Service stays healthy ---
+app = FastAPI()
+
+@app.get("/")
+def health_check():
+    return {"status": "Telemetry Simulator Worker is running online"}
+
 if __name__ == "__main__":
-    run_simulation()
+    # Start the infinite simulation loop in a background daemon thread
+    sim_thread = threading.Thread(target=run_simulation, daemon=True)
+    sim_thread.start()
+    
+    # Bind to Render's dynamic PORT environment variable
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
